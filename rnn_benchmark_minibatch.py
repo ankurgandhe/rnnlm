@@ -35,6 +35,10 @@ class RNN(object):
 
     #---------------------------------------------------------------------------------
     def __init__(self, rng, output_taps, n_in, n_hidden, n_out, samples, minibatch, mode, profile, dtype=theano.config.floatX,params=None):
+	self.initialize(rng, output_taps, n_in, n_hidden, n_out, samples, minibatch, mode, profile, dtype,params)
+
+    def initialize(self,rng, output_taps, n_in, n_hidden, n_out, samples, minibatch, mode, profile, dtype=theano.config.floatX,params=None):
+	
         """
             :type rng: numpy.random.RandomState
             :param rng: a random number generator used to initialize weights
@@ -277,9 +281,9 @@ class Engine(object):
         # RNN SETUP
         #-----------------------------------------           
         # initialize random generator                                                  
-        rng = numpy.random.RandomState(1234)      
+        self.rng = numpy.random.RandomState(1234)      
         # construct the CTC_RNN class
-        classifier = RNN(rng=rng, output_taps=output_taps, n_in=n_in, n_hidden=n_hidden, n_out=n_out, samples=N, minibatch=minibatch, mode=mode, profile=profile)    
+        classifier = RNN(rng=self.rng, output_taps=output_taps, n_in=n_in, n_hidden=n_hidden, n_out=n_out, samples=N, minibatch=minibatch, mode=mode, profile=profile)    
         # fetch the training function
         train_fn = classifier.build_finetune_functions(learning_rate, mode, profile)   
         
@@ -321,7 +325,7 @@ class MetaRNN(object):
 
     def __init__(self,n_in=784,n_hidden=100,n_out=11,samples=1000,
                 learning_rate=0.1,minibatch=1,
-                n_epochs=10,
+                n_epochs=1,old_params = None,
                 output_taps=[-1]):
 
         #-----------------------------------------
@@ -344,6 +348,7 @@ class MetaRNN(object):
         self.lr = learning_rate 
         self.n_epochs  = n_epochs
 	self.output_taps = output_taps 
+        self.old_params = old_params
         print 'network: n_in:{},n_hidden:{},n_out:{},output:softmax'.format(n_in, n_hidden, n_out)
         print 'data: samples:{},length:{},batch_size:{}'.format(samples,self.minibatch,samples)
         
@@ -351,9 +356,9 @@ class MetaRNN(object):
         # RNN SETUP
         #-----------------------------------------
         # initialize random generator
-        rng = numpy.random.RandomState(1234)
+        self.rng = numpy.random.RandomState(1234)
         # construct the CTC_RNN class
-        self.classifier = RNN(rng=rng, output_taps=output_taps, n_in=n_in, n_hidden=n_hidden, n_out=n_out, samples=self.N, minibatch=self.minibatch, mode=self.mode, profile=self.profile)
+        self.classifier = RNN(rng=self.rng, output_taps=output_taps, n_in=n_in, n_hidden=n_hidden, n_out=n_out, samples=self.N, minibatch=self.minibatch, mode=self.mode, profile=self.profile,params=old_params)
         # fetch the training function
         self.train_fn = self.classifier.build_finetune_functions(self.lr, self.mode, self.profile)
 
@@ -367,22 +372,34 @@ class MetaRNN(object):
 	    test_fn = None 
 	else:
 	    test_sample = valid_x.shape[0]
-	    test_classifier = RNN(rng=rng, output_taps=self.output_taps, n_in=self.n_in, n_hidden=self.n_hidden, n_out=self.n_out, samples=test_sample, minibatch=self.minibatch, mode=self.mode, profile=self.profile)
-	    test_fn = Testclassifier.build_test_function(mode, profile)
+	    test_classifier = RNN(rng=self.rng, output_taps=self.output_taps, n_in=self.n_in, n_hidden=self.n_hidden, n_out=self.n_out, samples=test_sample, minibatch=self.minibatch, mode=self.mode, profile=self.profile,params = self.old_params)
+	    test_fn = test_classifier.build_test_function(self.mode, self.profile)
+
+	get_params = self.classifier.build_get_params(self.mode,self.profile);	
+        best_validation_cost = 1e10 ;
 
         print 'Running ({} epochs)'.format(self.n_epochs)
         start_time = time.clock()
+	
         for _ in xrange(self.n_epochs) :
             batch_cost  = self.train_fn(data_x, data_y)
-            probs = test_fn(data_test_x,data_test_y)
             print >> sys.stderr , "Total Batch cost", batch_cost
 
+	    self.learnt_params = get_params()
+            test_classifier.initialize(rng=self.rng, output_taps=self.output_taps, n_in=self.n_in, n_hidden=self.n_hidden, n_out=self.n_out, samples=test_sample, minibatch=self.minibatch, mode=self.mode, profile=self.profile,params = self.learnt_params)
+	    if test_fn != None:
+	        test_fn = test_classifier.build_test_function(self.mode, self.profile)
+	    	probs = test_fn(valid_x,valid_y)
+	    else:
+		probs = 0 
+	    validation_cost  = numpy.exp(-1*numpy.mean(probs))
+	    print >> sys.stderr, "\tValidation cost : ", validation_cost 
+	    if best_validation_cost > validation_cost :
+		best_validation_cost = validation_cost 
+        	self.final_params = get_params()
 
-        get_params = self.classifier.build_get_params(self.mode,self.profile);
-        self.learnt_params = get_params()
-
-
-
+	return self.final_params 
+	
 
 if __name__ == '__main__':
     

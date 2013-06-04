@@ -4,10 +4,10 @@ from Corpus import  CreateData,GetVocabAndUNK
 from NNLMio import * 
 from TrainNNLM    import print_params,write_machine 
 from rnn_benchmark_minibatch import * 
-
+import numpy
 
 def convert_to_sparse(x,minibatch=1,N=4096):
-    data = zeros((len(x)/minibatch+1,minibatch,N),dtype=theano.config.floatX)
+    data = zeros((len(x)/minibatch+int(len(x)/minibatch>0),minibatch,N),dtype=theano.config.floatX)
     n = 0
     mb=0
     for i in x:
@@ -19,7 +19,13 @@ def convert_to_sparse(x,minibatch=1,N=4096):
             n = n+1
 	    mb = 0 
     return data
-
+def load_params(fparam):
+    pfiles = numpy.load(fparam+"/params.npz")
+    params = []
+    for p in sorted(pfiles):
+	print >> sys.stderr, "loading ",p,"with shape", pfiles[p].shape
+	params.append(pfiles[p])
+    return params 
 
 def train_nnlm(params):
     ftrain = params['ftrain']
@@ -74,9 +80,9 @@ def train_nnlm(params):
     NNLMdata = load_alldata(TrainData,DevData,TestData,ngram,N_input_layer)
     foldmodel = params['fmodel']
     if foldmodel.strip()!="":
-        OldParams = load_params_matlab(foldmodel)
+        OldParams = load_params(foldmodel)
     else:
-        OldParams = False
+        OldParams = None
     if not os.path.exists(fparam):
         os.makedirs(fparam)
     print >> sys.stderr,  "Writing system description"
@@ -95,7 +101,8 @@ fvocab)
     sample_size = len(ntrain_set_x)/minibatch+1
     data_set_y = numpy.append(ntrain_set_y,zeros((sample_size*minibatch - tot_train_size,1),dtype=theano.config.floatX))
     print >> sys.stderr, "Training size:", tot_train_size, ". With batch:", data_set_x.shape
-    rnn = MetaRNN(n_in=N_input_layer,n_hidden = H_hidden_layer, n_out = N_input_layer,samples = sample_size,learning_rate = learning_rate,minibatch =minibatch )
+    rnn = MetaRNN(n_in=N_input_layer,n_hidden = H_hidden_layer, n_out = N_input_layer,samples = sample_size,learning_rate = learning_rate,minibatch =minibatch,n_epochs= n_epochs,old_params=OldParams )
+
 
     #validation set for keeping track of progress 
     nvalid_set_x = NNLMdata[1][0][0]
@@ -103,11 +110,13 @@ fvocab)
     tot_valid_size = len(nvalid_set_y)
     valid_set_x = convert_to_sparse(nvalid_set_x,N=N_input_layer,minibatch=minibatch)
     valid_sample_size = len(nvalid_set_x)/minibatch+1
-    valid_set_y = numpy.append(nvalid_set_y,zeros((valid_sample_size*minibatch - tot_valid_size,1),dtype=theano.config.floatX))
+    valid_set_y = numpy.append(nvalid_set_y,zeros((valid_sample_size*minibatch - tot_valid_size,1),dtype=numpy.int32))
     print >> sys.stderr, "Validation size:", tot_valid_size, ". With batch:", valid_set_x.shape
    
 
-    rnn.train_rnn(data_set_x,ntrain_set_y,valid_set_x,valid_set_y)
+    final_params = rnn.train_rnn(data_set_x,ntrain_set_y,valid_set_x,valid_set_y)
+    fout = fparam+"/params"
+    numpy.savez(fout, *final_params)
 
 
 

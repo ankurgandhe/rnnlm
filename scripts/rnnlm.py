@@ -3,22 +3,25 @@ from ReadConfig import *
 from Corpus import  CreateData,GetVocabAndUNK
 from NNLMio import * 
 from TrainNNLM    import print_params,write_machine 
-from rnn_benchmark_minibatch import * 
+from rnn_vanilla_minibatch import * # benchmark_minibatch import * 
 import numpy
 
-def convert_to_sparse(x,minibatch=1,N=4096):
-    data = zeros((len(x)/minibatch+int(len(x)/minibatch>0),minibatch,N),dtype=theano.config.floatX)
+def convert_to_sparse_data(x,minibatch=1,N=4096,unk_id = 2 ):
+    data = zeros((len(x)+int(minibatch-len(x)%minibatch),N),dtype=theano.config.floatX)
     n = 0
-    mb=0
+    count_unk = 0 
     for i in x:
         if i >=N:
-            i=2
-        data[n][mb][i] = 1
-	mb=mb+1
-	if mb >= minibatch:
-            n = n+1
-	    mb = 0 
+            i=unk_id 
+	if i == unk_id:
+	    n = n + 1 
+	    count_unk = count_unk + 1 
+	    continue 
+        data[n][i] = 1
+        n = n+1
+    print >> sys.stderr, "Number of unkowns:", count_unk 
     return data
+
 def load_params(fparam):
     pfiles = numpy.load(fparam+"/params.npz")
     params = []
@@ -52,7 +55,7 @@ def train_nnlm(params):
     adaptive_learning_rate = params['use_adaptive']
     fparam = params['foutparam']
     write_janus = params['write_janus']
-
+    gpu_copy_size = params['copy_size']
     #For RNNLM, ngram = 2 always 
     ngram = 2 
 
@@ -86,36 +89,39 @@ def train_nnlm(params):
     if not os.path.exists(fparam):
         os.makedirs(fparam)
     print >> sys.stderr,  "Writing system description"
-    print_params(foldmodel,ngram,N_input_layer,n_feats,P_projection_layer,H_hidden_layer,learning_rate, L1_reg, L2_reg, n_epochs,batch_size,adaptive_learning_rate,fparam,1)
-    write_machine(foldmodel,ngram,N_input_layer,n_feats,P_projection_layer,H_hidden_layer,learning_rate, L1_reg, L2_reg, n_epochs,batch_size,adaptive_learning_rate,fparam,printMapFile,WordID,
-fvocab,1)
-    print >> sys.stderr, "singletons:", N_unk
+    print_params(foldmodel,ngram,N_input_layer,n_feats,P_projection_layer,H_hidden_layer,learning_rate, 
+   		L1_reg, L2_reg, n_epochs,batch_size,adaptive_learning_rate,fparam,1)
+    write_machine(foldmodel,ngram,N_input_layer,n_feats,P_projection_layer,H_hidden_layer,learning_rate, 
+		L1_reg, L2_reg, n_epochs,batch_size,adaptive_learning_rate,fparam,printMapFile,WordID,fvocab,1)
     
     #RNNLM 
-    minibatch = 1
+    minibatch = batch_size
     ntrain_set_x = NNLMdata[0][0][0]
     ntrain_set_y = NNLMdata[0][1]
 
     tot_train_size = len(ntrain_set_y)
-    data_set_x = convert_to_sparse(ntrain_set_x,N=N_input_layer,minibatch=minibatch)
-    sample_size = len(ntrain_set_x)/minibatch+1
-    data_set_y = numpy.append(ntrain_set_y,zeros((sample_size*minibatch - tot_train_size,1),dtype=numpy.int32))
-    print >> sys.stderr, "Training size:", tot_train_size, ". With batch:", data_set_x.shape
-    rnn = MetaRNN(n_in=N_input_layer,n_hidden = H_hidden_layer, n_out = N_input_layer,samples = sample_size,learning_rate = learning_rate,minibatch =minibatch,n_epochs= n_epochs,old_params=OldParams )
+    unk_id = -1 
+    if "<UNK>" in WordID:
+	unk_id = WordID["<UNK>"]
+    data_set_x = convert_to_sparse_data(ntrain_set_x,N=N_input_layer,minibatch=minibatch,unk_id = unk_id)
+    sample_size = len(ntrain_set_x)
+    data_set_y = numpy.append(ntrain_set_y,zeros(( data_set_x.shape[0] - tot_train_size,1),dtype=numpy.int32))
+    print >> sys.stderr, "Training size:", data_set_x.shape[0], ". With batch size:", minibatch 
+    rnn = MetaRNN(n_in=N_input_layer,n_hidden = H_hidden_layer, n_out = N_input_layer,samples = sample_size,
+		  learning_rate = learning_rate,minibatch =minibatch,n_epochs= n_epochs,old_params=OldParams )
 
 
     #validation set for keeping track of progress 
     nvalid_set_x = NNLMdata[1][0][0]
     nvalid_set_y = NNLMdata[1][1]
     tot_valid_size = len(nvalid_set_y)
-    valid_set_x = convert_to_sparse(nvalid_set_x,N=N_input_layer,minibatch=minibatch)
-    valid_sample_size = len(nvalid_set_x)/minibatch+1
-    valid_set_y = numpy.append(nvalid_set_y,zeros((valid_sample_size*minibatch - tot_valid_size,1),dtype=numpy.int32))
-    print >> sys.stderr, "Validation size:", tot_valid_size, ". With batch:", valid_set_x.shape
+    valid_set_x = convert_to_sparse_data(nvalid_set_x,N=N_input_layer,minibatch=minibatch,unk_id = unk_id)
+    valid_sample_size = len(nvalid_set_x) 
+    valid_set_y = numpy.append(nvalid_set_y,zeros((valid_set_x.shape[0] - tot_valid_size,1),dtype=numpy.int32))
+    print >> sys.stderr, "Validation size:", valid_set_x.shape[0] , ". With batch size:", minibatch
    
-
-    final_params = rnn.train_rnn(data_set_x,data_set_y,valid_set_x,valid_set_y)
     fout = fparam+"/params"
+    final_params = rnn.train_rnn(data_set_x,data_set_y,valid_set_x,valid_set_y,gpu_copy_size,unk_id,fout)
     numpy.savez(fout, *final_params)
     print >> sys.stderr, "Parameters written to", fout 
 
@@ -123,20 +129,22 @@ def test_rnnlm(test_data_file,old_param_file, outfile):
     if outfile == "":
         outfile = testfile+".prob"
     ngram,n_feats,N,P,H,number_hidden_layer,WordID = read_machine(old_param_file)
-    unkid = -1
+    minibatch = 2
+    unk_id = -1
     if "<UNK>" in WordID:
-        unkid = WordID["<UNK>"]
+        unk_id = WordID["<UNK>"]
     
 
     TestData,N_input_layer,N_unk = CreateData(test_data_file,WordID,[],ngram,False,False)
-    NNLMdata = load_data(TestData,ngram,N,1e10,unkid)
+    NNLMdata = load_data(TestData,ngram,N,1e10,unk_id)
     ntest_set_x =  NNLMdata[0][0]
     ntest_set_y =  NNLMdata[1]
-    test_set_x = convert_to_sparse(ntest_set_x,N=N,minibatch=1)
+    test_set_x = convert_to_sparse_data(ntest_set_x,N=N,minibatch=minibatch*10,unk_id=unk_id)
+    test_set_y = numpy.append(ntest_set_y,zeros((test_set_x.shape[0] - len(ntest_set_y),1),dtype=numpy.int32))
     sample_size = len(ntest_set_x)
     OldParams = load_params(old_param_file)
     rnn = MetaRNN(n_in=N,n_hidden = H, n_out = N,samples = sample_size,old_params=OldParams )
-    rnn.test_rnn(test_set_x,ntest_set_y,WordID,outfile)
+    rnn.test_rnn_batch(test_set_x,test_set_y,WordID,outfile)
 
 if __name__ == '__main__':
     if len(sys.argv)<2:

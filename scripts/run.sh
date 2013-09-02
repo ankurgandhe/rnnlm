@@ -1,1 +1,3 @@
-THEANO_FLAGS='device=gpu' python rnnlm.py $1
+export PYTHONPATH=~/tools/NNLM/scripts 
+
+THEANO_FLAGS='device=gpu0' python scripts/rnnlm.py $1

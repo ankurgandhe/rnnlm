@@ -35,10 +35,10 @@ import math
 class RNN(object):
 
     #---------------------------------------------------------------------------------
-    def __init__(self, rng, output_taps, n_in, n_hidden, n_out, samples, mode, profile, dtype=theano.config.floatX,params=None):
-	self.initialize(rng, output_taps, n_in, n_hidden, n_out, samples, mode, profile, dtype,params)
+    def __init__(self, rng, output_taps, n_in, n_hidden, n_out, samples, mode, profile, dtype=theano.config.floatX,params=None,n_features=0):
+	self.initialize(rng, output_taps, n_in, n_hidden, n_out, samples, mode, profile, dtype,params,n_features)
 
-    def initialize(self,rng, output_taps, n_in, n_hidden, n_out, samples, mode, profile, dtype=theano.config.floatX,params=None):
+    def initialize(self,rng, output_taps, n_in, n_hidden, n_out, samples, mode, profile, dtype=theano.config.floatX,params=None,n_features=0):
 	
         """
             :type rng: numpy.random.RandomState
@@ -68,6 +68,9 @@ class RNN(object):
         # learning rate
         self.lr = T.scalar()
         self.n_hidden = n_hidden  
+	self.samples = samples 
+	self.n_features = n_features 
+	self.n_in  = n_in 
         if params == None:
             # recurrent weights as real values
             W = [theano.shared(numpy.random.uniform(size=(n_hidden, n_hidden), low= -.01, high=.01).astype(dtype), 
@@ -87,6 +90,9 @@ class RNN(object):
             W_out = theano.shared(numpy.random.uniform(size=(n_hidden, n_out), low= -.01, high=.01).astype(dtype), name='W_out')
             # output bias
             b_out = theano.shared(numpy.zeros((n_out,)).astype(dtype), name='b_out')      
+	    # weight vector from input feature layer to the hidden layer 
+	    if n_features > 0:
+		Wf_in = theano.shared(numpy.random.uniform(size=(n_features, n_hidden), low= -.01, high=.01).astype(dtype), name='Wf_in')
               
         else:
             # recurrent weights as real values
@@ -107,14 +113,28 @@ class RNN(object):
             # output bias
             #b_out = theano.shared(params[5], name='b_out')
 
+	    # weight vector from input feature layer to the hidden layer
+	    if n_features > 0:
+		Wf_in = theano.shared(params[3], name='Wf_in')
+                #Wf_in = theano.shared(numpy.random.uniform(size=(n_features, n_hidden), low= -.01, high=.01).astype(dtype), name='Wf_in')
+	
         # stack the network parameters            
         self.params = []
         self.params.extend(W)
         #self.params.extend([b_h])
         self.params.extend([W_in]) #([W_in, b_in])
         self.params.extend([W_out]) #([W_out, b_out])
+	if n_features > 0:
+	    self.params.extend([Wf_in])
+
 	self.L1  = abs(W[0]).sum() + abs(W_in).sum() + abs(W_out).sum()
+	if n_features > 0:
+	    self.L1 = self.L1 + abs(Wf_in).sum()
+
 	self.L2 = (W[0] ** 2).sum() + (W_in ** 2 ).sum() + ( W_out ** 2).sum() 
+	if n_features > 0:
+	    self.L2 = self.L2 + (Wf_in ** 2).sum()
+
 	self.lambdaL1 = 0.0 
 	self.lambdaL2 = 1e-7
         # the hidden state `h` for the entire sequence, and the output for the
@@ -137,18 +157,12 @@ class RNN(object):
         #            profile=profile)
                       
         # error between output and target
-        #self.cost = ((y - self.t) ** 2).sum()                   
         y = y.reshape((samples*1,n_out))        
-	#y_tmp = y 
-        self.lprob_y_given_x = T.log10(y)[T.arange(self.t.shape[0]), self.t] # T.log((y)[T.arange(self.t.shape[0]), self.t])
+        self.lprob_y_given_x = T.log10(y)[T.arange(self.t.shape[0]), self.t] 
 	
-        self.cost = -T.mean(T.log10(y)[T.arange(self.t.shape[0]), self.t]) #+ self.lambdaL1*self.L1 + self.lambdaL2*self.L2 # -T.mean(T.log(y_tmp)[T.arange(self.t.shape[0]), self.t])
+        self.cost = -T.mean(T.log10(y)[T.arange(self.t.shape[0]), self.t]) 
     	self.last_hidden = h[samples-1]
 
-    #def logcost(self,t):
-	#return ((self.y - t) ** 2).sum() # -T.mean(T.log(self.y)[T.arange(t.shape[0]), t]) #+ self.lambdaL1*self.L1 + self.lambdaL2*self.L2
-    #def lprob_y_given_x(self, t):
-	#return T.log(self.y)[T.arange(t.shape[0]), t]
     #---------------------------------------------------------------------------------
     def softmax_tensor(self, h, W, b):
         return T.nnet.softmax(T.dot(h, W) + b)
@@ -188,14 +202,24 @@ class RNN(object):
 
 	    W_out = args[self.len_output_taps * 2 + 1] #W_out = args[self.len_output_taps * 2 + 3]
             #b_out = args[self.len_output_taps * 2 + 4]
-            
+	    if self.n_features > 0:
+		Wf_in = args[self.len_output_taps * 2 + 2] 
+
             # sum up the recurrent activations                                               
             act = T.dot(r_act_vals[0], r_weights[0]) #+ b_h
             for u in xrange(1, self.len_output_taps):   
                 act += T.dot(r_act_vals[u], r_weights[u]) #+ b_h
+
+	    # compute the feature input 
+	    if self.n_features > 0:
+		feat_act = T.dot(u_t[self.n_in:],Wf_in) 	
             
             # compute the new recurrent activation
-            h_t = T.nnet.sigmoid(T.dot(u_t, W_in) +act ) #+ b_in + act)
+	    if self.n_features==0:
+            	h_t = T.nnet.sigmoid(T.dot(u_t, W_in) +act ) #+ b_in + act)
+	    else:
+                h_t = T.nnet.sigmoid(T.dot(u_t[0:self.n_in], W_in) +act + feat_act ) #+ b_in + act)
+
             y_t = self.symbolic_softmax(T.dot(h_t, W_out)) # T.nnet.softmax(T.dot(h_t, W_out)) # + b_out)                     
 
             return h_t,y_t 
@@ -203,12 +227,10 @@ class RNN(object):
     #---------------------------------------------------------------------------------
     def build_finetune_functions(self, learning_rate, mode, profile):
         
-        print >> sys.stderr, 'Compiling training function'        
+        print >> sys.stderr, 'Compiling training function...',        
         #-----------------------------------------
         # THEANO train function
         #-----------------------------------------           
-	#define cost 
-	#self.cost = self.logcost(self.t) + + self.lambdaL1*self.L1 + self.lambdaL2*self.L2 
 
         gparams = []
         for param in self.params:
@@ -219,23 +241,78 @@ class RNN(object):
         updates = {}
         for param, gparam in zip(self.params, gparams):
             updates[param] = param - self.lr * gparam 
-        
+         
         # define the train function    
-        train_fn = theano.function([self.u,self.t,self.H], #[sandbox.cuda.basic_ops.gpu_from_host(self.u), sandbox.cuda.basic_ops.gpu_from_host(T.cast(self.t,'float32'))],                             
+        train_fn = theano.function([self.u,self.t,self.H], 
                              outputs=[self.cost,self.last_hidden],
                              updates=updates,
                              givens={#self.H:T.cast(self.h, 'float32'), 
                                      self.lr:T.cast(learning_rate, 'float32')},
-			     #on_unused_input='warn',
                              mode=mode,
                              profile=profile)
+	print >> sys.stderr, "Done"
+        return train_fn
+    def build_finetune_functions_gpu(self, x_shared,y_shared,learning_rate, mode, profile):
 
+        print >> sys.stderr, 'Compiling training function...'
+        #-----------------------------------------
+        # THEANO train function
+        #-----------------------------------------
+	index = T.iscalar(); 
+        gparams = []
+        for param in self.params:
+            gparam = T.grad(self.cost, param)
+            gparams.append(gparam)
+
+        # specify how to update the parameters of the model as a dictionary
+        updates = {}
+        for param, gparam in zip(self.params, gparams):
+            updates[param] = param - self.lr * gparam
+	updates[self.h] = self.last_hidden 
+        # define the train function
+        train_fn = theano.function([index], 
+                             outputs=[self.cost,self.last_hidden],
+                             updates=updates,
+                             givens={self.u: x_shared[self.samples*index:self.samples*(index+1)],
+                                     self.t : y_shared[self.samples*index:self.samples*(index+1)],
+                                     self.lr:T.cast(learning_rate, 'float32'),
+				     self.H : self.h}, 
+                             mode=mode,
+                             profile=profile)
+        return train_fn
+    def build_finetune_functions_gpu(self, x_shared,y_shared,learning_rate, mode, profile):
+
+        print >> sys.stderr, 'Compiling training function...'
+        #-----------------------------------------
+        # THEANO train function
+        #-----------------------------------------
+	index = T.iscalar(); 
+        gparams = []
+        for param in self.params:
+            gparam = T.grad(self.cost, param)
+            gparams.append(gparam)
+
+        # specify how to update the parameters of the model as a dictionary
+        updates = {}
+        for param, gparam in zip(self.params, gparams):
+            updates[param] = param - self.lr * gparam
+	updates[self.h] = self.last_hidden 
+        # define the train function
+        train_fn = theano.function([index], 
+                             outputs=[self.cost,self.last_hidden],
+                             updates=updates,
+                             givens={self.u: x_shared[self.samples*index:self.samples*(index+1)],
+                                     self.t : y_shared[self.samples*index:self.samples*(index+1)],
+                                     self.lr:T.cast(learning_rate, 'float32'),
+				     self.H : self.h}, 
+                             mode=mode,
+                             profile=profile)
+        print >> sys.stderr, "Done"
         return train_fn
 
     #---------------------------------------------------------------------------------
     def build_test_function(self,mode,profile):
         print >> sys.stderr, "Compiling test function" 
-        #self.h = theano.shared(numpy.zeros((self.n_hidden,)).astype(theano.config.floatX), name='h')
         test_fn = theano.function([self.u, self.t,self.H],
                                   outputs=[self.lprob_y_given_x,self.last_hidden],
                                   #givens={self.H:T.cast(self.h, 'float32')},
@@ -264,7 +341,7 @@ class RNN(object):
 
 class MetaRNN(object):
 
-    def __init__(self,n_in=784,n_hidden=100,n_out=11,samples=1000,
+    def __init__(self,n_in=784,n_hidden=100, n_features = 0, n_out=11,samples=1000,
                 learning_rate=0.1,minibatch=5,
                 n_epochs=1,old_params = None,
                 output_taps=[-1]):
@@ -291,7 +368,7 @@ class MetaRNN(object):
 	self.output_taps = output_taps 
         self.old_params = old_params
 	self.samples = samples 
-	self.test_minibatch = self.minibatch*10
+	self.test_minibatch = self.minibatch*100
         self.hidden_init = numpy.zeros((n_hidden,),dtype=theano.config.floatX) #theano.shared(numpy.zeros((n_hidden,)).astype(theano.config.floatX), name='h')
         print >> sys.stderr, 'network: n_in:{},n_hidden:{},n_out:{},output:softmax'.format(n_in, n_hidden, n_out)
         print >> sys.stderr, 'data: samples:{},batch_size:{}'.format(samples,self.minibatch)
@@ -330,50 +407,32 @@ class MetaRNN(object):
   	n_gpu_batches = self.samples / gpu_copy_size +1 ; 
 	#print >> sys.stderr, n_gpu_batches 
         for iepoch in xrange(self.n_epochs) :
-	    print >> sys.stderr, "Epoch:",iepoch
 	    total_cost = 0
             self.hidden_init = numpy.zeros((self.n_hidden,),dtype=theano.config.floatX)
 	    self.lr = self.lr / 1.5 
+	    if self.lr < 0.025*2 :
+		self.lr = 0.025*2
             self.train_fn = self.classifier.build_finetune_functions(self.lr, self.mode, self.profile)
+            print >> sys.stderr, "Epoch:",iepoch,", alpha:",self.lr 
 	    for gbatch in xrange(n_gpu_batches):
 	    	data_x_shared = data_x[gbatch*gpu_copy_size:min(self.samples,(gbatch+1)*gpu_copy_size)]
 	    	data_y_shared = data_y[gbatch*gpu_copy_size:min(self.samples,(gbatch+1)*gpu_copy_size)]
 		n_batches = len(data_y[gbatch*gpu_copy_size:min(self.samples,(gbatch+1)*gpu_copy_size)])/self.N 
-            	for ibatch in range(n_batches):
+	 	print >> sys.stderr,"shuffling data... ",
+                xn = numpy.arange(n_batches)
+            	numpy.random.shuffle(xn)
+            	print >> sys.stderr,"shuffled"
+		ncount = 0 
+            	for ibatch in xn:
+            	    #for ibatch in range(n_batches):
                     data_x1 = data_x_shared[ibatch*self.N : (ibatch+1)*self.N]
                     data_y1 = data_y_shared[ibatch*self.N : (ibatch+1)*self.N] 
-                    batch_cost,final_hidden  = self.train_fn(data_x1, data_y1,self.hidden_init)
-		    self.hidden_init = final_hidden 
-		    #self.classifier.initialize_hidden(final_hidden) 
-                    total_cost = total_cost + batch_cost 
-                    if (ibatch%5000)==0:
-                    	print >> sys.stderr , "Current Train entropy:", total_cost/numpy.log10(2)/((ibatch+1)) #Total Batch",ibatch+1,"cost", batch_cost
-            
-	    self.learnt_params = get_params()
-	    self.hidden_init = numpy.zeros((self.n_hidden,),dtype=theano.config.floatX)
-            test_classifier.initialize(rng=self.rng, output_taps=self.output_taps, n_in=self.n_in, n_hidden=self.n_hidden, n_out=self.n_out, samples=self.test_minibatch, mode=self.mode, profile=self.profile,params = self.learnt_params)
-	    if test_fn != None:
-	        test_fn = test_classifier.build_test_function(self.mode, self.profile)
-		validation_cost = 0 
-		n_words = 0 
-		unk_words = 0 
-		for ibatch in xrange(test_batches):
-	    	    probs,last_hidden = test_fn(valid_x[ibatch*self.test_minibatch : (ibatch+1)*self.test_minibatch] ,valid_y[ibatch*self.test_minibatch : (ibatch+1)*self.test_minibatch],self.hidden_init)
-		    self.hidden_init = last_hidden
-		   
-		    for y,logp in zip(valid_y[ibatch*self.test_minibatch : (ibatch+1)*self.test_minibatch],probs):
-			if y!= unk_id:
-			    validation_cost = validation_cost + logp 
-			    n_words = n_words + 1 
-		    	else:
-			    unk_words = unk_words + 1 
-		    #validation_cost = validation_cost +numpy.mean(-1*probs) 
 	    else:
 	    	probs = 0 
 		validation_cost = 0 
 	    validation_cost = -1 * validation_cost / numpy.log10(2) / n_words 
 	    #validation_cost = validation_cost / numpy.log10(2)/test_batches 
-	    print >> sys.stderr, "\tNumber of unks:",unk_words, "Validation Entropy: ", validation_cost 
+	    print >> sys.stderr, "\tValidation Entropy: ", validation_cost 
 	    if best_validation_cost >= validation_cost :
 	    	best_validation_cost = validation_cost 
         	self.final_params = get_params()
@@ -395,7 +454,8 @@ class MetaRNN(object):
 	    if y==WordID['<UNK>']:
 		print >> fout, 0
                 continue
-            print >> fout,math.pow(10,yl) #numpy.exp(yl)
+            print >> fout,math.pow(10,yl)
+ 
     def test_rnn_batch(self,test_x,test_y,WordID,outfile):
         test_sample = test_x.shape[0]
 	self.hidden_init = numpy.zeros((self.n_hidden,),dtype=theano.config.floatX)
@@ -408,6 +468,7 @@ class MetaRNN(object):
         fout = open(outfile,'w')
 	unk_id = WordID['<UNK>']
 	test_batches = test_sample / self.test_minibatch 
+	print >> sys.stderr, "test minibatches:",self.test_minibatch 
         for ibatch in xrange(test_batches): 
             probs,last_hidden = test_fn(test_x[ibatch*self.test_minibatch : (ibatch+1)*self.test_minibatch] ,test_y[ibatch*self.test_minibatch : (ibatch+1)*self.test_minibatch],self.hidden_init)
             self.hidden_init = last_hidden
@@ -421,9 +482,8 @@ class MetaRNN(object):
                 else:
                      unk_words = unk_words + 1
 		     print >> fout, 0
-                    #validation_cost = validation_cost +numpy.mean(-1*probs)
-        validation_cost = -1 * validation_cost / numpy.log10(2) / n_words
-            #validation_cost = validation_cost / numpy.log10(2)/test_batches
+        
+	validation_cost = -1 * validation_cost / numpy.log10(2) / n_words
      	print >> sys.stderr, "\tNumber of unks:",unk_words, "Test Entropy: ", validation_cost
 
 

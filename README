@@ -1,0 +1,10 @@
+RNNLM toolkit using theano
+## For details on configuration file refer to /home/ankurgan/tools/NNLM/readme 
+# train 
+sh scripts/run.sh 
+ usage : scripts/run.sh <config.ini> 
+
+# test
+ sh scripts/test.sh
+Usage: sh test.sh test-data model-dir out-file 
+
